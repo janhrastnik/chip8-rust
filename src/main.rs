@@ -1,12 +1,27 @@
+use minifb::{Key, Window, WindowOptions};
 use rand::Rng;
-use std::fs::File;
-use std::io::prelude::*;
 
 fn main() {
     let mut chip8 = Chip8::new();
     chip8.load_rom("MAZE");
-    println!("{:?}", chip8.memory);
-    chip8.run();
+    println!("{:?}", chip8.memory.as_ref());
+
+    println!("{:?}", chip8.display.as_ref());
+
+    let mut window = Window::new("Test - ESC to exit", 64, 32, WindowOptions::default())
+        .unwrap_or_else(|e| {
+            panic!("{}", e);
+        });
+
+    // Limit to max ~60 fps update rate
+    window.limit_update_rate(Some(std::time::Duration::from_micros(16600)));
+
+    while window.is_open() && !window.is_key_down(Key::Escape) {
+        let buffer = chip8.display;
+
+        // We unwrap here as we want this code to exit if it fails. Real applications may want to handle this in a different way
+        // window.update_with_buffer(buffer.as_ref(), 64, 32).unwrap();
+    }
 }
 
 #[derive(Debug)]
@@ -23,12 +38,12 @@ pub struct Chip8 {
     counter: u16,
     stack_pointer: u16,
     address_register: u16,
-    memory: Vec<u8>,
-    data_registers: Vec<u8>,
+    memory: [u8; 4096],
+    data_registers: [u8; 16],
     delay_timer: u8,
     sound_timer: u8,
     redraw_flag: bool,
-    display: Vec<Vec<u8>>,
+    display: [u8; 64 * 32],
 }
 
 impl Chip8 {
@@ -37,20 +52,18 @@ impl Chip8 {
             counter: 512,
             stack_pointer: 0,
             address_register: 0,
-            memory: vec![0; 4096],
-            data_registers: vec![0; 16],
+            memory: [0; 4096],
+            data_registers: [0; 16],
             delay_timer: 0,
             sound_timer: 0,
             redraw_flag: false,
-            display: vec![vec![0; 64]; 32],
+            display: [0; 64 * 32],
         }
     }
 
     fn load_rom(&mut self, filepath: &str) {
-        let mut file = File::open(filepath).expect("unable to open file");
-
         let mut content = Vec::new();
-        file.read_to_end(&mut content).expect("unable to read");
+        content = std::fs::read(filepath).expect("unable to read");
         println!("{}", content.len());
         println!("{:?}", content);
 
@@ -78,7 +91,7 @@ impl Chip8 {
             0x0 => match opcode.nnn {
                 0x00e0 => {
                     // clear the display
-                    self.display = vec![vec![0; 64]; 32]
+                    self.display = [0; 64 * 32]
                 }
                 0x00ee => {
                     // return from a subroutine
@@ -163,9 +176,9 @@ impl Chip8 {
                         + (self.data_registers[opcode.y as usize] as u16);
                     self.data_registers[opcode.x as usize] = value as u8;
                     if value > 255 {
-                        self.data_registers[16] = 1;
+                        self.data_registers[15] = 1;
                     } else {
-                        self.data_registers[16] = 0;
+                        self.data_registers[15] = 0;
                     }
                     self.counter += 2;
                 }
@@ -176,15 +189,15 @@ impl Chip8 {
                     if self.data_registers[opcode.x as usize]
                         > self.data_registers[opcode.y as usize]
                     {
-                        self.data_registers[16] = 1;
+                        self.data_registers[15] = 1;
                     } else {
-                        self.data_registers[16] = 0;
+                        self.data_registers[15] = 0;
                     }
                     self.counter += 2;
                 }
                 0x6 => {
                     //  Set Vx = Vx SHR 1.
-                    self.data_registers[16] = self.data_registers[opcode.x as usize] & 1;
+                    self.data_registers[15] = self.data_registers[opcode.x as usize] & 1;
                     self.data_registers[opcode.x as usize] >>= 1;
                     self.counter += 2;
                 }
@@ -195,15 +208,15 @@ impl Chip8 {
                     if self.data_registers[opcode.y as usize]
                         > self.data_registers[opcode.x as usize]
                     {
-                        self.data_registers[16] = 1;
+                        self.data_registers[15] = 1;
                     } else {
-                        self.data_registers[16] = 0;
+                        self.data_registers[15] = 0;
                     }
                     self.counter += 2;
                 }
                 0xe => {
                     //  Set Vx = Vx SHL 1.
-                    self.data_registers[16] = self.data_registers[opcode.x as usize] >> 7;
+                    self.data_registers[15] = self.data_registers[opcode.x as usize] >> 7;
                     self.data_registers[opcode.x as usize] <<= 1;
                     self.counter += 2;
                 }
@@ -235,7 +248,7 @@ impl Chip8 {
             }
             0xd => {
                 //  Display n-byte sprite starting at memory location I at (Vx, Vy), set VF = collision.
-                self.data_registers[16] = 0;
+                self.data_registers[15] = 0;
                 for byte in 0..opcode.n {
                     let y = (self.data_registers[opcode.y as usize] + byte) % 32;
                     for bit in 0..8 {
@@ -243,8 +256,10 @@ impl Chip8 {
                         let color = (self.memory[(self.address_register + byte as u16) as usize]
                             >> (7 - bit))
                             & 1;
-                        self.data_registers[16] |= color & self.display[y as usize][x as usize];
-                        self.display[y as usize][x as usize] ^= color;
+                        self.data_registers[15] |=
+                            color & self.display[y as usize * 64 + x as usize];
+
+                        self.display[y as usize * 64 + x as usize] ^= color;
                     }
                 }
                 self.redraw_flag = true;
@@ -283,7 +298,7 @@ impl Chip8 {
                 0x1e => {
                     //  Set I = I + Vx. In case of overflow set VF to 1.
                     self.address_register += self.data_registers[opcode.x as usize] as u16;
-                    self.data_registers[16] = if self.address_register > 0x0F00 { 1 } else { 0 };
+                    self.data_registers[15] = if self.address_register > 0x0F00 { 1 } else { 0 };
                     self.counter += 2;
                 }
                 0x29 => {
