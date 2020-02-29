@@ -17,10 +17,15 @@ fn main() {
     window.limit_update_rate(Some(std::time::Duration::from_micros(16600)));
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
-        let buffer = chip8.display;
-
+        chip8.run();
+        let mut buffer = chip8.display;
+        for i in 0..buffer.len() {
+            if buffer[i] == 1 {
+                buffer[i] = 0xffffff;
+            }
+        }
         // We unwrap here as we want this code to exit if it fails. Real applications may want to handle this in a different way
-        // window.update_with_buffer(buffer.as_ref(), 64, 32).unwrap();
+        window.update_with_buffer(buffer.as_ref(), 64, 32).unwrap();
     }
 }
 
@@ -43,7 +48,7 @@ pub struct Chip8 {
     delay_timer: u8,
     sound_timer: u8,
     redraw_flag: bool,
-    display: [u8; 64 * 32],
+    display: [u32; 64 * 32],
 }
 
 impl Chip8 {
@@ -257,9 +262,9 @@ impl Chip8 {
                             >> (7 - bit))
                             & 1;
                         self.data_registers[15] |=
-                            color & self.display[y as usize * 64 + x as usize];
+                            color & self.display[y as usize * 64 + x as usize] as u8;
 
-                        self.display[y as usize * 64 + x as usize] ^= color;
+                        self.display[y as usize * 64 + x as usize] ^= color as u32;
                     }
                 }
                 self.redraw_flag = true;
