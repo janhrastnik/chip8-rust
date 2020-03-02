@@ -1,22 +1,46 @@
-use minifb::{Key, Window, WindowOptions};
+use minifb::{Key, KeyRepeat, Window, WindowOptions};
 use rand::Rng;
 
 fn main() {
     let mut chip8 = Chip8::new();
-    chip8.load_rom("MAZE");
-    println!("{:?}", chip8.memory.as_ref());
+    chip8.load_rom("roms/PONG");
 
-    println!("{:?}", chip8.display.as_ref());
-
-    let mut window = Window::new("Test - ESC to exit", 64, 32, WindowOptions::default())
+    let mut window = Window::new("Chip8 Emulator", 640, 320, WindowOptions::default())
         .unwrap_or_else(|e| {
             panic!("{}", e);
         });
 
-    // Limit to max ~60 fps update rate
     window.limit_update_rate(Some(std::time::Duration::from_micros(16600)));
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
+        chip8.pressed_key = 0;
+        window.get_keys_pressed(KeyRepeat::No).map(|keys| {
+            if !keys.is_empty() {
+                let key = match keys[0] {
+                    Key::Key1 => Some(0x1),
+                    Key::Key2 => Some(0x2),
+                    Key::Key3 => Some(0x3),
+                    Key::Key4 => Some(0xC),
+                    Key::Q => Some(0x4),
+                    Key::W => Some(0x5),
+                    Key::E => Some(0x6),
+                    Key::R => Some(0xD),
+                    Key::A => Some(0x7),
+                    Key::S => Some(0x8),
+                    Key::D => Some(0x9),
+                    Key::F => Some(0xE),
+                    Key::Z => Some(0xA),
+                    Key::X => Some(0x0),
+                    Key::C => Some(0xB),
+                    Key::V => Some(0xF),
+                    _ => None,
+                };
+                if key.is_some() {
+                    chip8.pressed_key = key.unwrap();
+                }
+                println!("{:?}", key);
+            }
+        });
         chip8.run();
         let mut buffer = chip8.display;
         for i in 0..buffer.len() {
@@ -24,7 +48,6 @@ fn main() {
                 buffer[i] = 0xffffff;
             }
         }
-        // We unwrap here as we want this code to exit if it fails. Real applications may want to handle this in a different way
         window.update_with_buffer(buffer.as_ref(), 64, 32).unwrap();
     }
 }
@@ -42,6 +65,7 @@ pub struct Opcode {
 pub struct Chip8 {
     counter: u16,
     stack_pointer: u16,
+    stack: [u16; 16],
     address_register: u16,
     memory: [u8; 4096],
     data_registers: [u8; 16],
@@ -49,6 +73,7 @@ pub struct Chip8 {
     sound_timer: u8,
     redraw_flag: bool,
     display: [u32; 64 * 32],
+    pressed_key: u8,
 }
 
 impl Chip8 {
@@ -56,6 +81,7 @@ impl Chip8 {
         Chip8 {
             counter: 512,
             stack_pointer: 0,
+            stack: [0; 16],
             address_register: 0,
             memory: [0; 4096],
             data_registers: [0; 16],
@@ -63,14 +89,12 @@ impl Chip8 {
             sound_timer: 0,
             redraw_flag: false,
             display: [0; 64 * 32],
+            pressed_key: 0,
         }
     }
 
     fn load_rom(&mut self, filepath: &str) {
-        let mut content = Vec::new();
-        content = std::fs::read(filepath).expect("unable to read");
-        println!("{}", content.len());
-        println!("{:?}", content);
+        let content = std::fs::read(filepath).expect("unable to read");
 
         for (i, u) in content.iter().enumerate() {
             self.memory[i + 512] = *u;
@@ -90,8 +114,6 @@ impl Chip8 {
             kk: (op & 0x000FF) as u8,
         };
 
-        println!("{:?}", opcode);
-
         match opcode.leading {
             0x0 => match opcode.nnn {
                 0x00e0 => {
@@ -100,10 +122,12 @@ impl Chip8 {
                 }
                 0x00ee => {
                     // return from a subroutine
-                    self.stack_pointer -= 1
+                    self.stack_pointer -= 1;
+                    self.counter = self.stack[self.stack_pointer as usize];
+                    self.counter += 2;
                 }
                 _ => {
-                    // jump to addr
+                    // jump to addr, not needed in modern interpreters
                 }
             },
             0x1 => {
@@ -112,6 +136,7 @@ impl Chip8 {
             }
             0x2 => {
                 // call subroutine at nnn
+                self.stack[self.stack_pointer as usize] = self.counter;
                 self.stack_pointer += 1;
                 self.counter = opcode.nnn
             }
@@ -273,11 +298,21 @@ impl Chip8 {
             0xe => match opcode.kk {
                 0x9e => {
                     //  Skip next instruction if key with the value of Vx is pressed.
-                    self.counter += 2;
+                    let register_key = self.data_registers[opcode.x as usize];
+                    if register_key == self.pressed_key {
+                        self.counter += 4;
+                    } else {
+                        self.counter += 2;
+                    }
                 }
                 0xa1 => {
                     //  Skip next instruction if key with the value of Vx is not pressed.
-                    self.counter += 2;
+                    let register_key = self.data_registers[opcode.x as usize];
+                    if register_key != self.pressed_key {
+                        self.counter += 4;
+                    } else {
+                        self.counter += 2;
+                    }
                 }
                 _ => panic!("unexpected opcode"),
             },
@@ -289,6 +324,10 @@ impl Chip8 {
                 }
                 0x0a => {
                     //  Wait for a key press, store the value of the key in Vx.
+                    if self.pressed_key != 0 {
+                        self.data_registers[opcode.x as usize] = self.pressed_key;
+                        self.counter += 2;
+                    }
                 }
                 0x15 => {
                     //  Set delay timer = Vx.
