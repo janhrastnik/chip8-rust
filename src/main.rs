@@ -1,22 +1,45 @@
 use minifb::{Key, KeyRepeat, Window, WindowOptions};
 use rand::Rng;
+use std::time::{Duration, Instant};
 
 fn main() {
+    let fontset = vec![
+        0xF0, 0x90, 0x90, 0x90, 0xF0, //0
+        0x20, 0x60, 0x20, 0x20, 0x70, //1
+        0xF0, 0x10, 0xF0, 0x80, 0xF0, //2
+        0xF0, 0x10, 0xF0, 0x10, 0xF0, //3
+        0x90, 0x90, 0xF0, 0x10, 0x10, //4
+        0xF0, 0x80, 0xF0, 0x10, 0xF0, //5
+        0xF0, 0x80, 0xF0, 0x90, 0xF0, //6
+        0xF0, 0x10, 0x20, 0x40, 0x40, //7
+        0xF0, 0x90, 0xF0, 0x90, 0xF0, //8
+        0xF0, 0x90, 0xF0, 0x10, 0xF0, //9
+        0xF0, 0x90, 0xF0, 0x90, 0x90, //A
+        0xE0, 0x90, 0xE0, 0x90, 0xE0, //B
+        0xF0, 0x80, 0x80, 0x80, 0xF0, //C
+        0xE0, 0x90, 0x90, 0x90, 0xE0, //D
+        0xF0, 0x80, 0xF0, 0x80, 0xF0, //E
+        0xF0, 0x80, 0xF0, 0x80, 0x80, //F
+    ];
     let mut chip8 = Chip8::new();
-    chip8.load_rom("roms/PONG");
+    chip8.load_rom("roms/INVADERS");
+    chip8.load_fonts(fontset);
 
     let mut window = Window::new("Chip8 Emulator", 640, 320, WindowOptions::default())
         .unwrap_or_else(|e| {
             panic!("{}", e);
         });
 
-    window.limit_update_rate(Some(std::time::Duration::from_micros(16600)));
+    window.limit_update_rate(Some(std::time::Duration::from_micros(14000)));
+    let mut time = Instant::now();
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
-        chip8.pressed_key = 0;
-        window.get_keys_pressed(KeyRepeat::No).map(|keys| {
+        chip8.run();
+        chip8.redraw_flag = true;
+        window.get_keys_pressed(KeyRepeat::Yes).map(|keys| {
+            let mut key = None;
             if !keys.is_empty() {
-                let key = match keys[0] {
+                key = match keys[0] {
                     Key::Key1 => Some(0x1),
                     Key::Key2 => Some(0x2),
                     Key::Key3 => Some(0x3),
@@ -29,26 +52,28 @@ fn main() {
                     Key::S => Some(0x8),
                     Key::D => Some(0x9),
                     Key::F => Some(0xE),
-                    Key::Z => Some(0xA),
+                    Key::Y => Some(0xA),
                     Key::X => Some(0x0),
                     Key::C => Some(0xB),
                     Key::V => Some(0xF),
                     _ => None,
                 };
-                if key.is_some() {
-                    chip8.pressed_key = key.unwrap();
-                }
-                println!("{:?}", key);
+            }
+            if key.is_some() || Instant::now() - time >= Duration::from_millis(200) {
+                chip8.pressed_key = key;
+                time = Instant::now();
             }
         });
-        chip8.run();
         let mut buffer = chip8.display;
         for i in 0..buffer.len() {
             if buffer[i] == 1 {
                 buffer[i] = 0xffffff;
             }
         }
-        window.update_with_buffer(buffer.as_ref(), 64, 32).unwrap();
+        if chip8.redraw_flag {
+            window.update_with_buffer(buffer.as_ref(), 64, 32).unwrap();
+            chip8.redraw_flag = false;
+        }
     }
 }
 
@@ -73,7 +98,7 @@ pub struct Chip8 {
     sound_timer: u8,
     redraw_flag: bool,
     display: [u32; 64 * 32],
-    pressed_key: u8,
+    pressed_key: Option<u8>,
 }
 
 impl Chip8 {
@@ -89,7 +114,7 @@ impl Chip8 {
             sound_timer: 0,
             redraw_flag: false,
             display: [0; 64 * 32],
-            pressed_key: 0,
+            pressed_key: None,
         }
     }
 
@@ -98,6 +123,12 @@ impl Chip8 {
 
         for (i, u) in content.iter().enumerate() {
             self.memory[i + 512] = *u;
+        }
+    }
+
+    fn load_fonts(&mut self, fonts: Vec<u8>) {
+        for (i, font) in fonts.iter().enumerate() {
+            self.memory[i] = *font;
         }
     }
 
@@ -118,7 +149,9 @@ impl Chip8 {
             0x0 => match opcode.nnn {
                 0x00e0 => {
                     // clear the display
-                    self.display = [0; 64 * 32]
+                    self.display = [0; 64 * 32];
+                    self.redraw_flag = true;
+                    self.counter += 2;
                 }
                 0x00ee => {
                     // return from a subroutine
@@ -132,13 +165,13 @@ impl Chip8 {
             },
             0x1 => {
                 // jump to location nnn
-                self.counter = opcode.nnn
+                self.counter = opcode.nnn;
             }
             0x2 => {
                 // call subroutine at nnn
                 self.stack[self.stack_pointer as usize] = self.counter;
                 self.stack_pointer += 1;
-                self.counter = opcode.nnn
+                self.counter = opcode.nnn;
             }
             0x3 => {
                 //  Skip next instruction if Vx = kk.
@@ -172,7 +205,7 @@ impl Chip8 {
             }
             0x7 => {
                 //  Set Vx = Vx + kk.
-                let sum = self.data_registers[opcode.x as usize] + opcode.kk;
+                let sum = self.data_registers[opcode.x as usize].wrapping_add(opcode.kk);
                 self.data_registers[opcode.x as usize] = sum;
                 self.counter += 2;
             }
@@ -202,7 +235,7 @@ impl Chip8 {
                 }
                 0x4 => {
                     // Set Vx = Vx + Vy, set VF = carry.
-                    let value = (self.data_registers[opcode.x as usize] as u16)
+                    let value: u16 = (self.data_registers[opcode.x as usize] as u16)
                         + (self.data_registers[opcode.y as usize] as u16);
                     self.data_registers[opcode.x as usize] = value as u8;
                     if value > 255 {
@@ -214,11 +247,10 @@ impl Chip8 {
                 }
                 0x5 => {
                     //  Set Vx = Vx - Vy, set VF = NOT borrow.
-                    self.data_registers[opcode.x as usize] = self.data_registers[opcode.y as usize]
-                        .wrapping_sub(self.data_registers[opcode.x as usize]);
-                    if self.data_registers[opcode.x as usize]
-                        > self.data_registers[opcode.y as usize]
-                    {
+                    let diff: i8 = self.data_registers[opcode.x as usize] as i8
+                        - self.data_registers[opcode.y as usize] as i8;
+                    self.data_registers[opcode.x as usize] = diff as u8;
+                    if diff < 0 {
                         self.data_registers[15] = 1;
                     } else {
                         self.data_registers[15] = 0;
@@ -233,11 +265,10 @@ impl Chip8 {
                 }
                 0x7 => {
                     //  Set Vx = Vy - Vx, set VF = NOT borrow.
-                    self.data_registers[opcode.x as usize] = self.data_registers[opcode.x as usize]
-                        .wrapping_sub(self.data_registers[opcode.y as usize]);
-                    if self.data_registers[opcode.y as usize]
-                        > self.data_registers[opcode.x as usize]
-                    {
+                    let diff: i8 = self.data_registers[opcode.y as usize] as i8
+                        - self.data_registers[opcode.x as usize] as i8;
+                    self.data_registers[opcode.x as usize] = diff as u8;
+                    if diff < 0 {
                         self.data_registers[15] = 1;
                     } else {
                         self.data_registers[15] = 0;
@@ -254,7 +285,7 @@ impl Chip8 {
             },
             0x9 => {
                 //  Skip next instruction if Vx != Vy.
-                if self.data_registers[opcode.y as usize] != self.data_registers[opcode.x as usize]
+                if self.data_registers[opcode.x as usize] != self.data_registers[opcode.y as usize]
                 {
                     self.counter += 4;
                 } else {
@@ -299,7 +330,7 @@ impl Chip8 {
                 0x9e => {
                     //  Skip next instruction if key with the value of Vx is pressed.
                     let register_key = self.data_registers[opcode.x as usize];
-                    if register_key == self.pressed_key {
+                    if self.pressed_key.is_some() && register_key == self.pressed_key.unwrap() {
                         self.counter += 4;
                     } else {
                         self.counter += 2;
@@ -308,7 +339,7 @@ impl Chip8 {
                 0xa1 => {
                     //  Skip next instruction if key with the value of Vx is not pressed.
                     let register_key = self.data_registers[opcode.x as usize];
-                    if register_key != self.pressed_key {
+                    if self.pressed_key.is_some() && register_key != self.pressed_key.unwrap() {
                         self.counter += 4;
                     } else {
                         self.counter += 2;
@@ -324,10 +355,11 @@ impl Chip8 {
                 }
                 0x0a => {
                     //  Wait for a key press, store the value of the key in Vx.
-                    if self.pressed_key != 0 {
-                        self.data_registers[opcode.x as usize] = self.pressed_key;
+                    if self.pressed_key.is_some() {
+                        self.data_registers[opcode.x as usize] = self.pressed_key.unwrap();
                         self.counter += 2;
                     }
+                    self.redraw_flag = true;
                 }
                 0x15 => {
                     //  Set delay timer = Vx.
@@ -380,5 +412,11 @@ impl Chip8 {
             },
             _ => panic!("unexpected leading number"),
         };
+        if self.delay_timer > 0 {
+            self.delay_timer -= 1;
+        }
+        if self.sound_timer > 0 {
+            self.sound_timer -= 1;
+        }
     }
 }
